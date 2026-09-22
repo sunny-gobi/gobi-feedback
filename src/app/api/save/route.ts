@@ -1,10 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
-import { sections } from "@/lib/questions";
 import { parsePayload, sanitiseAnswers, saveResponse } from "@/lib/server/feedback";
 
 export const runtime = "nodejs";
 
-/** Final submission: validates every required question, then marks the session row completed. */
+/**
+ * Partial save: called on every answer change (debounced), on section change and
+ * when the tab is hidden, so drop-offs still leave a row in feedback_responses.
+ * Nothing is validated as required here; /api/submit does that on the final step.
+ */
 export async function POST(req: NextRequest) {
   let body;
   try {
@@ -13,25 +16,21 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Invalid request" }, { status: 400 });
   }
   const p = parsePayload(body);
-  if (!p) return NextResponse.json({ error: "Invalid request" }, { status: 400 });
+  if (!p || !p.sessionId) return NextResponse.json({ error: "Invalid request" }, { status: 400 });
 
-  const { answers, missing } = sanitiseAnswers(p.raw);
-  if (missing.length) {
-    return NextResponse.json({ error: "Some required answers are missing", missing }, { status: 400 });
-  }
+  const { answers } = sanitiseAnswers(p.raw);
+  if (Object.keys(answers).length === 0) return NextResponse.json({ ok: true, skipped: true });
 
   const { error } = await saveResponse({
-    status: "completed",
+    status: "in_progress",
     sessionId: p.sessionId,
     answers,
     ref: p.ref,
     outreachId: p.outreachId,
-    step: sections.length,
+    step: p.step,
     duration: p.duration,
     userAgent: req.headers.get("user-agent")?.slice(0, 500) ?? null,
   });
-  if (error) {
-    return NextResponse.json({ error: "Could not save your answers. Please try again." }, { status: 500 });
-  }
+  if (error) return NextResponse.json({ error: "Could not save" }, { status: 500 });
   return NextResponse.json({ ok: true });
 }

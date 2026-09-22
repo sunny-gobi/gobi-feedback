@@ -10,13 +10,24 @@ import {
   isVisible,
   sections,
 } from "@/lib/questions";
+import { useAutosave } from "./useAutosave";
 
 const DRAFT_KEY = "gobi-feedback-draft-v1";
 
 interface Draft {
+  /** Identifies this run through the form; partial saves upsert on it. */
+  sessionId: string;
   step: number;
   answers: Answers;
   startedAt: number;
+}
+
+function newSessionId(): string {
+  if (typeof crypto !== "undefined" && "randomUUID" in crypto) return crypto.randomUUID();
+  return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
+    const r = (Math.random() * 16) | 0;
+    return (c === "x" ? r : (r & 0x3) | 0x8).toString(16);
+  });
 }
 
 interface Props {
@@ -28,9 +39,9 @@ interface Props {
 
 /** Runs on the client only (this component is loaded with ssr: false). */
 function loadDraft(prefill: Props["prefill"], jumpTo?: number): Draft {
-  let d: Draft = { step: 0, answers: {}, startedAt: 0 };
+  let d: Draft = { sessionId: newSessionId(), step: 0, answers: {}, startedAt: 0 };
   if (process.env.NODE_ENV === "development" && jumpTo !== undefined) {
-    return { step: Math.max(0, Math.min(sections.length + 1, jumpTo)), answers: {}, startedAt: Date.now() };
+    return { ...d, step: Math.max(0, Math.min(sections.length + 1, jumpTo)), startedAt: Date.now() };
   }
   try {
     const raw = localStorage.getItem(DRAFT_KEY);
@@ -38,6 +49,8 @@ function loadDraft(prefill: Props["prefill"], jumpTo?: number): Draft {
       const parsed = JSON.parse(raw) as Partial<Draft>;
       if (parsed && parsed.answers) {
         d = {
+          // Drafts saved before autosave existed have no session id; give them one.
+          sessionId: typeof parsed.sessionId === "string" ? parsed.sessionId : d.sessionId,
           step: Math.min(parsed.step ?? 0, sections.length),
           answers: parsed.answers,
           startedAt: parsed.startedAt ?? 0,
@@ -52,6 +65,7 @@ function loadDraft(prefill: Props["prefill"], jumpTo?: number): Draft {
 
 export default function Survey({ refId, prefill, jumpTo }: Props) {
   const [initial] = useState<Draft>(() => loadDraft(prefill, jumpTo));
+  const sessionId = initial.sessionId;
   const [step, setStep] = useState(initial.step);
   const [answers, setAnswers] = useState<Answers>(initial.answers);
   const [startedAt, setStartedAt] = useState<number>(initial.startedAt);
@@ -66,10 +80,14 @@ export default function Survey({ refId, prefill, jumpTo }: Props) {
     try {
       localStorage.setItem(
         DRAFT_KEY,
-        JSON.stringify({ step, answers, startedAt } satisfies Draft),
+        JSON.stringify({ sessionId, step, answers, startedAt } satisfies Draft),
       );
     } catch {}
-  }, [answers, step, startedAt]);
+  }, [sessionId, answers, step, startedAt]);
+
+  // Save every entry to the server as the user goes, so drop-offs are captured.
+  const inForm = step >= 1 && step <= sections.length;
+  const autosave = useAutosave(inForm ? { sessionId, answers, step, ref: refId, startedAt } : null);
 
   const setAnswer = useCallback((id: string, value: string | string[] | undefined) => {
     setAnswers((a) => ({ ...a, [id]: value }));
@@ -132,6 +150,7 @@ export default function Survey({ refId, prefill, jumpTo }: Props) {
   const submit = async () => {
     setSubmitting(true);
     setSubmitError(null);
+    autosave.stop();
     // Drop answers to questions that are no longer visible (branch changed)
     const clean: Answers = {};
     for (const s of sections)
@@ -142,8 +161,10 @@ export default function Survey({ refId, prefill, jumpTo }: Props) {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          sessionId,
           answers: clean,
           ref: refId,
+          step: sections.length,
           durationSeconds: startedAt ? Math.round((Date.now() - startedAt) / 1000) : null,
         }),
       });
@@ -157,6 +178,7 @@ export default function Survey({ refId, prefill, jumpTo }: Props) {
       setStep(sections.length + 1);
       scrollTop();
     } catch (e) {
+      autosave.resume();
       setSubmitError(e instanceof Error ? e.message : "Something went wrong");
     } finally {
       setSubmitting(false);
@@ -249,7 +271,7 @@ function Intro({ onStart, hasDraft }: { onStart: () => void; hasDraft: boolean }
         <ul className="mt-6 space-y-3 text-black/75 font-medium">
           <li className="flex gap-3">
             <span className="text-xl">⏱️</span>
-            <span>Takes about 12–15 minutes. Your progress is saved on this device if you need to step away.</span>
+            <span>Takes about 12–15 minutes. Your answers are saved as you go, so you can step away and pick up where you left off on this device.</span>
           </li>
           <li className="flex gap-3">
             <span className="text-xl">🎁</span>
