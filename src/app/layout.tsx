@@ -9,6 +9,7 @@ const nunito = Nunito({
 });
 
 export const metadata: Metadata = {
+  metadataBase: new URL("https://gobi-feedback.vercel.app"),
   title: "Gobi · Tell us the truth",
   description: "A 12–15 minute questionnaire about how you go out, and how Gobi fits in.",
   robots: { index: false, follow: false },
